@@ -106,8 +106,6 @@ configure_ssh() {
     GITHUB_HOST="github.com"
     DEV_CLI_REPO="git@github.com:CrisisTextLine/dev-cli.git"
 
-    echo "🔑 Configuring SSH for GitHub..."
-
     # Ensure SSH directory and known_hosts file exist
     if [ ! -d "$SSH_DIR" ]; then
         mkdir -p "$SSH_DIR" && chmod 700 "$SSH_DIR"
@@ -134,7 +132,6 @@ configure_ssh() {
 
 # Test SSH connection to GitHub
 test_ssh_connection() {
-    echo "🔍  Testing SSH connection to GitHub..."
     set +e
     output=$(git ls-remote "$DEV_CLI_GITHUB" 2>&1)
     exit_status=$?
