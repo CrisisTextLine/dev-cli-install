@@ -1,0 +1,10 @@
+services:
+  test:
+    platform: linux/amd64  # Force the architecture to amd64 (x86_64)
+    build:
+      context: .
+    container_name: test
+    tty: true
+    stdin_open: true
+    volumes:
+      - ./install.sh:/home/developer/install.sh  # Mount a single file

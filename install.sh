@@ -1,41 +1,68 @@
 #!/bin/bash
 set -e  # Exit immediately on error
+#set -x  # Enable debugging (this will print all commands to the console)
 set -u  # Treat unset variables as an error
 set -o pipefail  # Catch errors in piped commands
 
 # Constants
+ZSHRC="$HOME/.zshrc"
 GITHUB_ORG="CrisisTextLine"
+DEV_CLI_GITHUB="git@github.com:CrisisTextLine/dev-cli.git"
 DEV_CLI_REPO="github.com/$GITHUB_ORG/dev-cli/cmd/ctl"
+
+# Detect OS & Environment
+OS_TYPE="$(uname)"
 
 # Check if command exists
 command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
-# Install Xcode (required for Homebrew)
+# Prompt user before installation
+prompt_install() {
+    read -p "Do you want to install $1? (Y/n): " choice
+    choice=$(echo "$choice" | tr '[:upper:]' '[:lower:]')
+    [[ "$choice" == "" || "$choice" == "y" || "$choice" == "yes" ]]
+}
+
+# Install Xcode (macOS only)
 install_xcode() {
-    if ! command_exists xcode-select; then
-        echo "🔧 Installing Xcode Command Line Tools..."
+    if [[ "$OS_TYPE" != "Darwin" ]]; then
+        echo "⚠️  Skipping Xcode installation (not macOS)."
+        return
+    fi
+
+    if command_exists xcode-select; then
+        echo "✅  Xcode Command Line Tools already installed."
+        return
+    fi
+
+    if prompt_install "Xcode Command Line Tools"; then
+        echo "🔧  Installing Xcode Command Line Tools..."
         xcode-select --install
     else
-        echo "✅  Xcode Command Line Tools already installed."
+        echo "🚀  Skipping Xcode installation."
     fi
 }
 
 # Install Homebrew
 install_homebrew() {
-    if ! command_exists brew; then
-        echo "🍺 Installing Homebrew..."
+    if command_exists brew; then
+        echo "✅  Homebrew already installed."
+        return
+    fi
+
+    if prompt_install "Homebrew"; then
+        echo "🍺  Installing Homebrew..."
         /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
         eval "$(/opt/homebrew/bin/brew shellenv)"  # Ensure brew is in the path
     else
-        echo "✅  Homebrew already installed."
+        echo "🚀  Skipping Homebrew installation."
     fi
 }
 
 # Install Git and Go if not installed
 install_git_go() {
-    echo "🔍 Checking for Git and Go installation..."
     missing_packages=""
 
     for pkg in git go; do
@@ -44,41 +71,32 @@ install_git_go() {
         fi
     done
 
-    if [ -n "$missing_packages" ]; then
-        echo "⚙️ Installing missing packages: $missing_packages"
+    if [ -z "$missing_packages" ]; then
+        echo "✅  Git and Go are already installed."
+        return
+    fi
+
+    if prompt_install "$missing_packages"; then
+        echo "⚙️  Installing missing packages: $missing_packages"
         brew install $missing_packages
     else
-        echo "✅  Git and Go are already installed."
+        echo "🚀  Skipping $missing_packages installation."
     fi
 }
 
-# Install Docker or OrbStack
-install_docker_orbstack() {
-    if command_exists orb; then
-        echo "✅  OrbStack is already installed."
-        return
-    fi
-
+# Install Docker
+install_docker() {
     if command_exists docker; then
         echo "✅  Docker is already installed."
-        prompt_for_orbstack
         return
     fi
 
-    prompt_for_orbstack
-}
-
-# Function to prompt the user for OrbStack installation
-prompt_for_orbstack() {
-    read -p "Do you want to use OrbStack (alternative to Docker)? Y/n: " choice
-    choice=$(echo "$choice" | tr '[:upper:]' '[:lower:]')
-
-    if [[ "$choice" == "y" || "$choice" == "yes" ]]; then
-        echo "🌊 Installing OrbStack..."
-        brew install --cask orbstack
-    else
-        echo "🐳 Installing Docker..."
+    if prompt_install "Docker"; then
+        echo "🐳  Installing Docker..."
         brew install --cask docker
+        echo "✅  Docker installed successfully."
+    else
+        echo "🚀  Skipping Docker installation."
     fi
 }
 
@@ -90,31 +108,35 @@ configure_ssh() {
 
     echo "🔑 Configuring SSH for GitHub..."
 
-    # Ensure SSH directory exists
-    mkdir -p "$SSH_DIR" && chmod 700 "$SSH_DIR"
-    echo "✅  SSH directory created."
-
-    # Ensure known_hosts exists
-    touch "$SSH_DIR/known_hosts" && chmod 644 "$SSH_DIR/known_hosts"
-    echo "✅  known_hosts file created."
-
-    # Add GitHub SSH key to known_hosts
-    if ! grep -q "$GITHUB_HOST" "$SSH_DIR/known_hosts"; then
-        echo "🔍 Adding GitHub's SSH host key to known_hosts..."
-        ssh-keyscan -H "$GITHUB_HOST" >> "$SSH_DIR/known_hosts"
-        echo "✅  GitHub SSH host key added."
-    else
-        echo "✅  GitHub SSH host key already exists."
+    # Ensure SSH directory and known_hosts file exist
+    if [ ! -d "$SSH_DIR" ]; then
+        mkdir -p "$SSH_DIR" && chmod 700 "$SSH_DIR"
+        echo "✅  SSH directory created."
     fi
+
+    # Check if known_hosts file exists, if not, create it
+    if [ ! -f "$SSH_DIR/known_hosts" ]; then
+        touch "$SSH_DIR/known_hosts" && chmod 644 "$SSH_DIR/known_hosts"
+        echo "✅  known_hosts file created."
+    fi
+
+    # Add GitHub SSH key to known_hosts if not already present
+      if ! ssh-keygen -F "$GITHUB_HOST" -f "$SSH_DIR/known_hosts" >/dev/null; then
+          echo "🔍 Adding GitHub's SSH host key to known_hosts..."
+          ssh-keyscan -H "$GITHUB_HOST" >> "$SSH_DIR/known_hosts"
+          echo "✅  GitHub SSH host key added."
+      else
+          echo "✅  GitHub SSH host key already exists."
+      fi
 
     test_ssh_connection
 }
 
 # Test SSH connection to GitHub
 test_ssh_connection() {
-    echo "🔍 Testing SSH connection to GitHub..."
+    echo "🔍  Testing SSH connection to GitHub..."
     set +e
-    output=$(git ls-remote "$DEV_CLI_REPO" 2>&1)
+    output=$(git ls-remote "$DEV_CLI_GITHUB" 2>&1)
     exit_status=$?
     set -e
 
@@ -153,20 +175,33 @@ prompt_generate_ssh_key() {
 generate_ssh_key() {
     SSH_DIR="$HOME/.ssh"
     DEFAULT_SSH_KEY="$SSH_DIR/id_ed25519"
-    defaultEmail=$(git config --global user.email)
-    defaultEmail=${defaultEmail:-"name@crisistextline.org"}
 
-    echo "🔑 Generating new SSH key..."
-    read -p "Enter your email for SSH key (default: $defaultEmail): " email
-    email=${email:-$defaultEmail}
+    # Check if Git is configured
+    if git config --global --get user.email &>/dev/null; then
+        defaultEmail=$(git config --global user.email)
+    else
+        defaultEmail=""
+    fi
 
+    echo "Git user email fetched: '$defaultEmail'"
+
+    # If no global email is set, ask the user for one
+    if [ -z "$defaultEmail" ]; then
+        echo "No global git email configured. Please enter an email for the SSH key."
+        read -p "Enter your email for SSH key: " email
+        email=${email:-"name@crisistextline.org"}  # Use the fallback email if none is provided
+    else
+        echo "Using git email: $defaultEmail"
+        email="$defaultEmail"
+    fi
+
+    # Set default SSH key path
     read -p "Enter the path to store the SSH key (default: $DEFAULT_SSH_KEY): " key_path
     key_path=${key_path:-$DEFAULT_SSH_KEY}
-
     key_path="${key_path/#\~/$HOME}"
 
     mkdir -p "$(dirname "$key_path")"
-    ssh-keygen -t ed25519 -C "$email" -f "$key_path" -N ""
+    ssh-keygen -t ed25519 -C "$email" -f "$key_path" -N "" || { echo "❌ SSH key generation failed."; exit 1; }
     update_ssh_config "$key_path"
     echo "⚠️ Add your SSH key to GitHub: https://github.com/settings/keys"
     echo "🔗 Public Key:"
@@ -184,51 +219,85 @@ update_ssh_config() {
 
     key_path="${key_path/#\~/$HOME}"
 
-    echo "🔍 Checking SSH config for GitHub identity file..."
-
-    # Ensure SSH config exists
+    # Ensure SSH config exists and is properly configured
     mkdir -p "$(dirname "$ssh_config")"
     touch "$ssh_config" && chmod 600 "$ssh_config"
-    echo "✅ Created SSH config file."
 
-    if grep -q "Host github.com" "$ssh_config"; then
-        if grep -q "IdentityFile" "$ssh_config"; then
-            sed -i.bak "/Host github.com/,/IdentityFile/s|IdentityFile .*|IdentityFile $key_path|" "$ssh_config"
-            echo "🔄 Updated IdentityFile for GitHub."
+    echo "🔍 Configuring SSH config for GitHub identity file..."
+
+    # Check if the system is Darwin (macOS)
+    if [[ "$(uname)" == "Darwin" ]]; then
+        # macOS specific configuration
+        if grep -q "Host github.com" "$ssh_config"; then
+            if grep -q "IdentityFile" "$ssh_config"; then
+                sed -i.bak "/Host github.com/,/IdentityFile/s|IdentityFile .*|IdentityFile $key_path|" "$ssh_config"
+                echo "🔄 Updated IdentityFile for GitHub."
+            else
+                sed -i.bak "/Host github.com/a \ \ IdentityFile $key_path" "$ssh_config"
+                echo "➕ Added IdentityFile for GitHub."
+            fi
         else
-            sed -i.bak "/Host github.com/a \ \ IdentityFile $key_path" "$ssh_config"
-            echo "➕ Added IdentityFile for GitHub."
+            echo -e "Host github.com\n  AddKeysToAgent yes\n  UseKeychain yes\n  IdentityFile $key_path" >> "$ssh_config"
+            echo "📝 Added GitHub host entry to SSH config (macOS)."
         fi
     else
-        echo -e "Host github.com\n  AddKeysToAgent yes\n  UseKeychain yes\n  IdentityFile $key_path" >> "$ssh_config"
-        echo "📝 Added GitHub host entry to SSH config."
+        # Non-macOS systems (Linux, etc.)
+        if grep -q "Host github.com" "$ssh_config"; then
+            if grep -q "IdentityFile" "$ssh_config"; then
+                sed -i.bak "/Host github.com/,/IdentityFile/s|IdentityFile .*|IdentityFile $key_path|" "$ssh_config"
+                echo "🔄 Updated IdentityFile for GitHub."
+            else
+                sed -i.bak "/Host github.com/a \ \ IdentityFile $key_path" "$ssh_config"
+                echo "➕ Added IdentityFile for GitHub."
+            fi
+        else
+            echo -e "Host github.com\n  AddKeysToAgent yes\n  IdentityFile $key_path" >> "$ssh_config"
+            echo "📝 Added GitHub host entry to SSH config (non-macOS)."
+        fi
     fi
 }
 
+
 # Configure Go for private repositories
 configure_go() {
-    echo "⚙️  Configuring Go for private repositories..."
+    if [ ! -f "$ZSHRC" ]; then
+        touch "$ZSHRC"
+        echo "✅  $ZSHRC file created."
+    fi
 
-    ZSHRC="$HOME/.zshrc"
-    if ! grep -q 'export PATH=$PATH:$(go env GOPATH)/bin' "$ZSHRC"; then
+    if grep -q 'export PATH=$PATH:$(go env GOPATH)/bin' "$ZSHRC"; then
+        echo "✅  GOPATH already configured in $ZSHRC."
+    else
+        if ! prompt_install "adding GOPATH to your PATH in $ZSHRC"; then
+            echo "🚀  Skipping GOPATH configuration."
+            return
+        fi
         echo 'export PATH=$PATH:$(go env GOPATH)/bin' >> "$ZSHRC"
         echo "✅  Updated PATH in $ZSHRC"
-    else
-        echo "✅  GOPATH already configured."
     fi
 
-    if [[ "$(go env GOPRIVATE)" != "github.com/$GITHUB_ORG/*" ]]; then
+    # Check if GOPRIVATE is already configured
+    if [[ "$(go env GOPRIVATE)" == "github.com/$GITHUB_ORG/*" ]]; then
+        echo "✅  GOPRIVATE already configured."
+    else
+        if ! prompt_install "configuring GOPRIVATE for Go"; then
+            echo "🚀  Skipping GOPRIVATE configuration."
+            return
+        fi
         go env -w GOPRIVATE="github.com/$GITHUB_ORG/*"
         echo "✅  GOPRIVATE configured."
-    else
-        echo "✅  GOPRIVATE already configured."
     fi
 
-    if ! git config --global --get-regexp 'url.git@github.com:.insteadOf' &>/dev/null; then
+    # Check if Git is already configured to use SSH for GitHub
+    if git config --global --get-regexp 'url.git@github.com:.insteadOf' &>/dev/null; then
+        echo "✅  Git already configured for SSH."
+    else
+        if ! prompt_install "configuring Git for SSH"; then
+            echo "🚀  Skipping Git SSH configuration."
+            return
+        fi
         git config --global url."git@github.com:".insteadOf "https://github.com/"
         echo "✅  Git configured for SSH."
-    else
-        echo "✅  Git already configured for SSH."
     fi
 }
 
@@ -236,17 +305,15 @@ configure_go() {
 install_dev_cli() {
     if command_exists ctl; then
         echo "✅  dev-cli is already installed."
-        return 0
+        return
     fi
 
-    echo "🚀 Installing dev-cli..."
-    go install "$DEV_CLI_REPO@latest"
-
-    if command_exists ctl; then
-        echo "✅  dev-cli installed successfully!"
+    if prompt_install "dev-cli"; then
+        echo "🚀  Installing dev-cli..."
+        go install "$DEV_CLI_REPO@latest"
+        echo "✅  dev-cli installed successfully."
     else
-        echo "❌ Installation failed."
-        exit 1
+        echo "🚀  Skipping dev-cli installation."
     fi
 }
 
@@ -255,11 +322,11 @@ main() {
     install_xcode
     install_homebrew
     install_git_go
-    install_docker_orbstack
+    install_docker
     configure_ssh
     configure_go
     install_dev_cli
-    echo "🎉 Setup complete!"
+    echo "🎉 Install complete!"
 }
 
 main
